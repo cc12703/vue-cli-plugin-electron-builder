@@ -1,5 +1,8 @@
 const fs = require('fs')
+const path = require('path')
+const fse = require('fs-extra')
 const { warn } = require('@vue/cli-shared-utils')
+const { isConstructSignatureDeclaration } = require('typescript')
 
 module.exports = (api, options = {}) => {
   if (!options.electronBuilder) options.electronBuilder = {}
@@ -14,7 +17,8 @@ module.exports = (api, options = {}) => {
   if (!hasBackground) {
     // If user does not have a background file it should be created
     api.render('./templates/base', {
-      spectronSupport: options.electronBuilder.addTests
+      spectronSupport: options.electronBuilder.addTests,
+      tsSupport: usesTS
     })
   }
   // Add tests
@@ -56,6 +60,16 @@ module.exports = (api, options = {}) => {
         '(process.env\n          .ELECTRON_NODE_INTEGRATION as unknown) as boolean'
       )
       fs.writeFileSync(api.resolve('./src/background.ts'), background)
+
+
+      if(fs.existsSync(api.resolve('./src/preload.js'))) {
+        fse.moveSync(api.resolve('./src/preload.js'), api.resolve('./src/preload.ts'))
+      }
+
+      if(!fs.existsSync(api.resolve('./src/main/index.js'))) {
+        fse.moveSync(api.resolve('./src/main/index.js'), api.resolve('./src/main/index.ts'))
+      }
+
     }
     if (api.hasPlugin('router')) {
       console.log('\n')
@@ -63,12 +77,42 @@ module.exports = (api, options = {}) => {
         'It is detected that you are using Vue Router. It must function in hash mode to work in Electron. Learn more at https://goo.gl/GM1xZG .'
       )
     }
+
+    fse.ensureDirSync(api.resolve('./src/render'))
+    const datas = ['assets', 'components', 'router', 'views', 'store', 'App.vue']
+    datas.forEach(item => {
+      const dst = api.resolve(path.join('./src/render', item))
+      const src = api.resolve(path.join('./src', item))
+      if(fs.existsSync(src) && !fs.existsSync(dst)) {
+        fse.moveSync(src, dst) 
+      }
+    })
+
+    if(usesTS) {
+      fse.ensureDirSync(api.resolve('./src/common/types'), {'recursive': true})
+          fs.readdirSync(api.resolve('./src')).forEach(item => {
+              if(item.endsWith('.d.ts')) {
+                const dst = api.resolve(path.join('./src/common/types', item))
+                const src = api.resolve(path.join('./src', item))
+                if(!fs.existsSync(dst)) {
+                  fse.moveSync(src, dst)
+                }
+              } 
+          })
+
+      const tsCfg = fse.readJSONSync(api.resolve('./tsconfig.json'))
+      if(!tsCfg.compilerOptions['typeRoots']) {
+        tsCfg.compilerOptions['typeRoots'] = ['./src/common/types/*']
+      }
+      fse.writeJSONSync(api.resolve('./tsconfig.json'), tsCfg, options = {spaces:2})
+    }
+
   })
 
   // Add electron-builder install-app-deps to postinstall and postuninstall
   const scripts = {
-    'electron:build': 'vue-cli-service electron:build',
-    'electron:serve': 'vue-cli-service electron:serve'
+    'build': 'vue-cli-service electron:build',
+    'serve': 'vue-cli-service electron:serve'
   }
   const addScript = (name, command) => {
     // Add on to existing script if it exists
